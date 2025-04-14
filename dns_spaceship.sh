@@ -5,9 +5,8 @@
 # Author: ChatGPT 修正版
 
 SPACESHIP_API="https://api.spaceship.dev/api/v1"
-SPACESHIP_API_HOST="104.21.33.136"
 
-######## Public functions ########
+########  Public functions #####################
 
 dns_spaceship_add() {
   fulldomain="${1}"
@@ -23,26 +22,28 @@ dns_spaceship_add() {
 
   _saveaccountconf_mutable SPACESHIP_API_KEY "$SPACESHIP_API_KEY"
   _saveaccountconf_mutable SPACESHIP_API_SECRET "$SPACESHIP_API_SECRET"
-
   export _H1="Authorization: sso-key $SPACESHIP_API_KEY:$SPACESHIP_API_SECRET"
-  export CURL_IPRESOLVE=4
-  CURL_OPTIONS="--resolve api.spaceship.dev:443:$SPACESHIP_API_HOST"
 
-  domain=$(echo "$fulldomain" | _get_root_domain)
+  _get_root "$fulldomain"
+  domain="$__domain"
+  subdomain="$__sub_domain"
   _debug "Parsed domain: $domain"
+  _debug "Subdomain: $subdomain"
 
-  subdomain="_acme-challenge.${domain}"
-  _debug "Adding record to $subdomain"
+  # 建立 TXT 紀錄
+  body="{\"type\":\"TXT\",\"name\":\"_acme-challenge\",\"data\":\"$txtvalue\",\"ttl\":600}"
+  _debug "Request body: $body"
 
-  data="{\"type\":\"TXT\",\"name\":\"_acme-challenge\",\"value\":\"$txtvalue\",\"ttl\":300}"
-  response="$(_post "$data" "$SPACESHIP_API/domains/$domain/records" "" "$CURL_OPTIONS")"
+  response="$(_post "$body" "$SPACESHIP_API/domains/$domain/records" "" "POST")"
+  _debug "Spaceship API response: $response"
 
-  _debug "Response: $response"
-  if ! printf "%s" "$response" | grep "TXT"; then
-    _err "Error adding TXT record"
-    return 1
+  if echo "$response" | grep '"id":' >/dev/null; then
+    _info "Successfully added TXT record."
+    return 0
   fi
-  return 0
+
+  _err "Error adding TXT record"
+  return 1
 }
 
 dns_spaceship_rm() {
@@ -52,22 +53,34 @@ dns_spaceship_rm() {
   _debug fulldomain "${fulldomain}"
   _debug txtvalue "${txtvalue}"
 
-  domain=$(echo "$fulldomain" | _get_root_domain)
-  subdomain="_acme-challenge.${domain}"
-
-  export _H1="Authorization: sso-key $SPACESHIP_API_KEY:$SPACESHIP_API_SECRET"
-  CURL_OPTIONS="--resolve api.spaceship.dev:443:$SPACESHIP_API_HOST"
-
-  record_id="$(curl -s $CURL_OPTIONS -H "$_H1" "$SPACESHIP_API/domains/$domain/records" | grep -B 2 "$txtvalue" | grep '"id"' | head -1 | cut -d ':' -f2 | tr -d ', ')"
-  _debug "Found record ID: $record_id"
-
-  if [ -z "$record_id" ]; then
-    _err "No record found to delete"
+  if [ -z "$SPACESHIP_API_KEY" ] || [ -z "$SPACESHIP_API_SECRET" ]; then
+    _err "SPACESHIP_API_KEY or SPACESHIP_API_SECRET not defined"
     return 1
   fi
 
-  response="$(curl -s -X DELETE $CURL_OPTIONS -H "$_H1" "$SPACESHIP_API/domains/$domain/records/$record_id")"
-  _debug "Delete response: $response"
+  _saveaccountconf_mutable SPACESHIP_API_KEY "$SPACESHIP_API_KEY"
+  _saveaccountconf_mutable SPACESHIP_API_SECRET "$SPACESHIP_API_SECRET"
+  export _H1="Authorization: sso-key $SPACESHIP_API_KEY:$SPACESHIP_API_SECRET"
+
+  _get_root "$fulldomain"
+  domain="$__domain"
+  subdomain="$__sub_domain"
+  _debug "Parsed domain: $domain"
+  _debug "Subdomain: $subdomain"
+
+  records="$(_get "$SPACESHIP_API/domains/$domain/records")"
+  _debug "Fetched records: $records"
+
+  record_id=$(echo "$records" | grep -oE '"id":[0-9]+' | head -n1 | cut -d':' -f2)
+
+  if [ -z "$record_id" ]; then
+    _info "No record found to delete."
+    return 0
+  fi
+
+  _debug "Deleting record ID: $record_id"
+  _response="$(_post "" "$SPACESHIP_API/domains/$domain/records/$record_id" "" "DELETE")"
+  _debug "Delete response: $_response"
 
   return 0
 }
